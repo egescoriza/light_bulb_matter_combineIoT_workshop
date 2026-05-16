@@ -28,6 +28,14 @@
 
 #include <zephyr/logging/log.h>
 
+// EXTRA
+#include <setup_payload/QRCodeSetupPayloadGenerator.h>
+#include <zephyr/kernel.h>
+#include <zephyr/drivers/display.h>
+#include <zephyr/drivers/gpio.h>
+#include <lvgl.h>
+#include <string.h>
+
 LOG_MODULE_DECLARE(app, CONFIG_CHIP_APP_LOG_LEVEL);
 
 using namespace ::chip;
@@ -39,6 +47,20 @@ namespace
 constexpr EndpointId kLightEndpointId = 1;
 constexpr uint8_t kDefaultMinLevel = 0;
 constexpr uint8_t kDefaultMaxLevel = 254;
+
+/*** Start - EXTRA ***/
+// User defined errors
+constexpr CHIP_ERROR kMyErrorDisplayRetLedPinNotReady = CHIP_APPLICATION_ERROR(0x01);
+constexpr CHIP_ERROR kMyErrorDisplayVccPinNotReady = CHIP_APPLICATION_ERROR(0x02);
+constexpr CHIP_ERROR kMyErrorDisplayRetLedGpioAsOuputError = CHIP_APPLICATION_ERROR(0x03);
+constexpr CHIP_ERROR kMyErrorDisplayVccGpioAsOuputError = CHIP_APPLICATION_ERROR(0x04);
+constexpr CHIP_ERROR kMyErrorDisplayRetLedGpioNotEnabled = CHIP_APPLICATION_ERROR(0x05);
+constexpr CHIP_ERROR kMyErrorDisplayVccGpioNotEnabled = CHIP_APPLICATION_ERROR(0x06);
+constexpr CHIP_ERROR kMyErrorDisplayDeviceNotReady = CHIP_APPLICATION_ERROR(0x07);
+// Settings
+static const struct gpio_dt_spec ret_led = GPIO_DT_SPEC_GET(DT_ALIAS(my_ret_led), gpios);
+static const struct gpio_dt_spec vcc = GPIO_DT_SPEC_GET(DT_ALIAS(my_vcc), gpios);
+/*** End - EXTRA ***/
 
 Nrf::Matter::IdentifyCluster sIdentifyCluster(kLightEndpointId, true, []() {
 	Nrf::PostTask([] { Nrf::GetBoard().GetLED(Nrf::DeviceLeds::LED2).Set(false); });
@@ -243,9 +265,76 @@ CHIP_ERROR AppTask::Init()
 	return Nrf::Matter::StartServer();
 }
 
+CHIP_ERROR AppTask::InitQRcodeOnDisplay()
+{
+	// Get QR Code
+    char payloadBuffer[chip::QRCodeBasicSetupPayloadGenerator::kMaxQRCodeBase38RepresentationLength + 1];
+    chip::MutableCharSpan qrCode(payloadBuffer);
+    GetQRCode(qrCode, chip::RendezvousInformationFlags(chip::RendezvousInformationFlag::kBLE));
+	LOG_DBG("SetupQRCode-TEST: [%s]", qrCode.data());
+
+    const struct device *display;
+
+	// Make sure that the GPIO was initialized
+	if (!gpio_is_ready_dt(&ret_led)) {
+		return kMyErrorDisplayRetLedPinNotReady;
+	}
+	if (!gpio_is_ready_dt(&vcc)) {
+		return kMyErrorDisplayVccPinNotReady;
+	}
+
+	// Set the GPIO as output
+	int ret = gpio_pin_configure_dt(&ret_led, GPIO_OUTPUT);
+	if (ret < 0) {
+		return kMyErrorDisplayRetLedGpioAsOuputError;
+	}
+	ret = gpio_pin_configure_dt(&vcc, GPIO_OUTPUT);
+	if (ret < 0) {
+		return kMyErrorDisplayVccGpioAsOuputError;
+	}
+
+	ret = gpio_pin_set_dt(&ret_led, 1);
+	if (ret) {
+		return kMyErrorDisplayRetLedGpioNotEnabled;
+	}
+	ret = gpio_pin_set_dt(&vcc, 1);
+	if (ret) {
+		return kMyErrorDisplayVccGpioNotEnabled;
+	}
+
+    // Initialize the display
+    display = DEVICE_DT_GET(DT_CHOSEN(zephyr_display));
+    if (!device_is_ready(display)) {
+        return kMyErrorDisplayDeviceNotReady;
+    }
+
+    // Disable display blanking
+    display_blanking_off(display);
+
+	lv_obj_set_style_bg_color(lv_screen_active(),
+                              lv_color_white(), 0);
+
+    lv_obj_t * qr = lv_qrcode_create(lv_screen_active());
+
+    lv_qrcode_set_size(qr, 110);
+
+    lv_qrcode_set_dark_color(qr, lv_color_black());
+    lv_qrcode_set_light_color(qr, lv_color_white());
+
+    lv_qrcode_update(qr, qrCode.data(), strlen(qrCode.data()));
+
+    lv_obj_center(qr);
+
+	lv_task_handler();
+
+	return CHIP_NO_ERROR;
+}
+
 CHIP_ERROR AppTask::StartApp()
 {
 	ReturnErrorOnFailure(Init());
+
+	ReturnErrorOnFailure(InitQRcodeOnDisplay());
 
 	while (true) {
 		Nrf::DispatchNextTask();

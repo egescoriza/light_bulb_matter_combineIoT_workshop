@@ -38,6 +38,9 @@ public:
 private:
 	CHIP_ERROR Init();
 
+	// EXTRA
+	CHIP_ERROR InitQRcodeOnDisplay();
+
 	static void LightingActionEventHandler(const LightingEvent &event);
 	static void ButtonEventHandler(Nrf::ButtonState state, Nrf::ButtonMask hasChanged);
 
