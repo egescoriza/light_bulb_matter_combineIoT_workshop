@@ -33,7 +33,6 @@
 #include <zephyr/kernel.h>
 #include <zephyr/drivers/display.h>
 #include <zephyr/drivers/gpio.h>
-#include <lvgl.h>
 #include <string.h>
 
 LOG_MODULE_DECLARE(app, CONFIG_CHIP_APP_LOG_LEVEL);
@@ -120,6 +119,28 @@ void AppTask::ButtonEventHandler(Nrf::ButtonState state, Nrf::ButtonMask hasChan
 	}
 }
 
+void AppTask::AppLevelMatterEventHandler(const chip::DeviceLayer::ChipDeviceEvent *event, intptr_t data)
+{
+	LOG_DBG("TEST: Matter Event Type, [%u]", event->Type);
+	switch (event->Type) {
+		case DeviceEventType::kCommissioningComplete:
+		{
+			LOG_DBG("TEST: kCommissioning Complete");
+#if defined(CONFIG_PWM)
+			bool lightOn = Instance().GetPWMDevice().IsTurnedOn();
+			uint8_t level = Instance().GetPWMDevice().GetLevel();
+
+			Nrf::PostTask([lightOn, level] {
+				AppTask().Instance().DeleteQr(lightOn, level);
+			});
+#endif
+		}
+			break;
+		default:
+			break;		
+	}
+}
+
 #ifdef CONFIG_AWS_IOT_INTEGRATION
 bool AppTask::AWSIntegrationCallback(struct aws_iot_integration_cb_data *data)
 {
@@ -174,6 +195,29 @@ void AppTask::ActionCompleted(Nrf::PWMDevice::Action_t action, int32_t actor)
 
 	if (actor == static_cast<int32_t>(LightingActor::Button)) {
 		Instance().UpdateClusterState();
+#if defined(CONFIG_PWM)
+		LOG_DBG("TEST: Update Cluster State");
+		if (AppTask::Instance().displayUI.commissionCompleted) {
+			LOG_DBG("TEST: commissionCompleted = true");
+
+			bool isOn = Instance().GetPWMDevice().IsTurnedOn();
+			uint8_t level = Instance().GetPWMDevice().GetLevel();
+
+			Instance().UpdateDisplay(isOn, level);	
+		}
+#endif
+	} else {
+#if defined(CONFIG_PWM)
+		LOG_DBG("TEST: Update Cluster State");
+		if (AppTask::Instance().displayUI.commissionCompleted) {
+			LOG_DBG("TEST: commissionCompleted = true");
+
+			bool isOn = Instance().GetPWMDevice().IsTurnedOn();
+			uint8_t level = Instance().GetPWMDevice().GetLevel();
+
+			Instance().UpdateDisplay(isOn, level);	
+		}
+#endif
 	}
 }
 #endif /* CONFIG_PWM */
@@ -209,6 +253,44 @@ void AppTask::UpdateClusterState()
 			LOG_ERR("Updating level cluster failed: %x", to_underlying(status));
 		}
 	});
+}
+
+void AppTask::DeleteQr(bool lightOn, uint8_t level)
+{
+	displayUI.commissionCompleted = true;
+
+	lv_obj_del(displayUI.QRoverlay);
+
+	char buffer[24];
+
+	displayUI.matter_device_type_label = lv_label_create(displayUI.container);
+	lv_label_set_text(displayUI.matter_device_type_label, "M. Light Bulb!");
+
+	displayUI.light_on_label = lv_label_create(displayUI.container);
+	sprintf(buffer, "Bulb State:%u", lightOn);
+	lv_label_set_text(displayUI.light_on_label, buffer);
+
+	displayUI.brightness_level_label = lv_label_create(displayUI.container);
+	sprintf(buffer, "Bulb Level:%u%%", (uint8_t)((level - 1) / 253.0 * 100.0 + 0.5));
+	lv_label_set_text(displayUI.brightness_level_label, buffer);
+
+	lv_task_handler();
+}
+
+void AppTask::UpdateDisplay(bool lightOn, uint8_t level)
+{
+	LOG_DBG("TEST: UpdateDisplay");
+
+	char buffer[24];
+	sprintf(buffer, "Bulb State:%u", lightOn);
+	lv_label_set_text(displayUI.light_on_label, buffer);
+
+	sprintf(buffer, "Bulb Level:%u%%", (uint8_t)((level - 1) / 253.0 * 100.0 + 0.5));
+	lv_label_set_text(displayUI.brightness_level_label, buffer);
+
+	display_blanking_off(displayUI.display);
+
+	lv_task_handler();
 }
 
 void AppTask::InitPWMDDevice()
@@ -252,6 +334,8 @@ CHIP_ERROR AppTask::Init()
 	 * state. */
 	ReturnErrorOnFailure(Nrf::Matter::RegisterEventHandler(Nrf::Board::DefaultMatterEventHandler, 0));
 
+	ReturnErrorOnFailure(Nrf::Matter::RegisterEventHandler(AppLevelMatterEventHandler, 0));
+
 #ifdef CONFIG_AWS_IOT_INTEGRATION
 	int retAws = aws_iot_integration_register_callback(AWSIntegrationCallback);
 	if (retAws) {
@@ -272,8 +356,6 @@ CHIP_ERROR AppTask::InitQRcodeOnDisplay()
     chip::MutableCharSpan qrCode(payloadBuffer);
     GetQRCode(qrCode, chip::RendezvousInformationFlags(chip::RendezvousInformationFlag::kBLE));
 	LOG_DBG("SetupQRCode-TEST: [%s]", qrCode.data());
-
-    const struct device *display;
 
 	// Make sure that the GPIO was initialized
 	if (!gpio_is_ready_dt(&ret_led)) {
@@ -303,27 +385,43 @@ CHIP_ERROR AppTask::InitQRcodeOnDisplay()
 	}
 
     // Initialize the display
-    display = DEVICE_DT_GET(DT_CHOSEN(zephyr_display));
-    if (!device_is_ready(display)) {
+    displayUI.display = DEVICE_DT_GET(DT_CHOSEN(zephyr_display));
+    if (!device_is_ready(displayUI.display)) {
         return kMyErrorDisplayDeviceNotReady;
     }
 
     // Disable display blanking
-    display_blanking_off(display);
+    display_blanking_off(displayUI.display);
 
-	lv_obj_set_style_bg_color(lv_screen_active(),
+	// lv_obj_set_style_bg_color(lv_screen_active(),
+    //                           lv_color_white(), 0);
+
+	displayUI.commissionCompleted = false;
+
+	// Set container for UI afer commissioning
+	displayUI.container = lv_obj_create(lv_scr_act());
+	lv_obj_set_size(displayUI.container, lv_pct(100), lv_pct(100));
+	lv_obj_center(displayUI.container);
+	lv_obj_set_flex_flow(displayUI.container, LV_FLEX_FLOW_COLUMN);
+	lv_obj_set_style_pad_all(displayUI.container, 5, 0);
+	lv_obj_clear_flag(displayUI.container, LV_OBJ_FLAG_SCROLLABLE);
+	lv_obj_set_style_bg_color(displayUI.container,
                               lv_color_white(), 0);
 
-    lv_obj_t * qr = lv_qrcode_create(lv_screen_active());
+	displayUI.QRoverlay = lv_obj_create(lv_scr_act());
+	lv_obj_set_size(displayUI.QRoverlay, lv_pct(100), lv_pct(100));
+	lv_obj_set_style_bg_color(displayUI.QRoverlay, lv_color_black(), LV_PART_MAIN);
+	lv_obj_set_style_bg_opa(displayUI.QRoverlay, LV_OPA_0, 0);  // fully transparent
+	lv_obj_clear_flag(displayUI.QRoverlay, LV_OBJ_FLAG_SCROLLABLE);
+	lv_obj_set_layout(displayUI.QRoverlay, LV_LAYOUT_NONE);  // no layout
 
-    lv_qrcode_set_size(qr, 110);
-
-    lv_qrcode_set_dark_color(qr, lv_color_black());
-    lv_qrcode_set_light_color(qr, lv_color_white());
-
-    lv_qrcode_update(qr, qrCode.data(), strlen(qrCode.data()));
-
-    lv_obj_center(qr);
+	// Set QRcode for commissioning							  
+    displayUI.qr = lv_qrcode_create(displayUI.QRoverlay);
+    lv_qrcode_set_size(displayUI.qr, 110);
+    lv_qrcode_set_dark_color(displayUI.qr, lv_color_black());
+    lv_qrcode_set_light_color(displayUI.qr, lv_color_white());
+    lv_qrcode_update(displayUI.qr, qrCode.data(), strlen(qrCode.data()));
+    lv_obj_center(displayUI.qr);
 
 	lv_task_handler();
 

@@ -11,6 +11,9 @@
 
 #include <platform/CHIPDeviceLayer.h>
 
+// EXTRA
+#include <lvgl.h>
+
 struct k_timer;
 struct Identify;
 
@@ -40,6 +43,9 @@ private:
 
 	// EXTRA
 	CHIP_ERROR InitQRcodeOnDisplay();
+	void DeleteQr(bool lightOn, uint8_t level);
+	void UpdateDisplay(bool lightOn, uint8_t level);
+	static void AppLevelMatterEventHandler(const chip::DeviceLayer::ChipDeviceEvent *event, intptr_t data);
 
 	static void LightingActionEventHandler(const LightingEvent &event);
 	static void ButtonEventHandler(Nrf::ButtonState state, Nrf::ButtonMask hasChanged);
@@ -52,4 +58,20 @@ private:
 #endif
 
 	Nrf::PWMDevice mPWMDevice;
+
+	// EXTRA
+	struct DisplayUI {
+		const struct device *display;
+
+		lv_obj_t *container;
+		lv_obj_t *QRoverlay;
+
+		lv_obj_t *qr;
+ 
+		lv_obj_t *matter_device_type_label;
+		lv_obj_t *light_on_label;
+		lv_obj_t *brightness_level_label;
+
+		bool commissionCompleted;
+	} displayUI;
 };
